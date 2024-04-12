@@ -16,13 +16,14 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.quiraadev.mlkitbarcodescanner.databinding.ActivityCameraBinding
 import org.tensorflow.lite.task.gms.vision.classifier.Classifications
+import org.tensorflow.lite.task.gms.vision.detector.Detection
 import java.text.NumberFormat
 import java.util.concurrent.Executors
 
 class CameraActivity : AppCompatActivity() {
 	private lateinit var binding: ActivityCameraBinding
 	private var cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-	private lateinit var imageClassifierHelper: ImageClassifierHelper
+	private lateinit var objectDetectionHelper: ObjectDetectionHelper
 
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
@@ -38,34 +39,48 @@ class CameraActivity : AppCompatActivity() {
 	}
 
 	private fun startCamera() {
-		imageClassifierHelper = ImageClassifierHelper(
+		objectDetectionHelper = ObjectDetectionHelper(
 			context = this,
-			classifierListener = object : ImageClassifierHelper.ClassifierListener {
+			detectorListener = object : ObjectDetectionHelper.DetectorListener {
 				override fun onError(error: String) {
 					runOnUiThread {
 						Toast.makeText(this@CameraActivity, error, Toast.LENGTH_SHORT).show()
 					}
 				}
 
-				override fun onResults(results: List<Classifications>?, inferenceTime: Long) {
+				override fun onResults(
+					results: MutableList<Detection>?,
+					inferenceTime: Long,
+					imageHeight: Int,
+					imageWidth: Int
+				) {
 					runOnUiThread {
-						results?.let { it ->
+						results?.let {
 							if (it.isNotEmpty() && it[0].categories.isNotEmpty()) {
 								println(it)
-								val sortedCategories =
-									it[0].categories.sortedByDescending { it?.score }
-								val displayResult =
-									sortedCategories.joinToString("\n") {
-										"${it.label} " + NumberFormat.getPercentInstance()
-											.format(it.score).trim()
-									}
-								binding.tvResult.text = displayResult
+								binding.overlay.setResults(
+									results, imageHeight, imageWidth
+								)
+
+								val builder = StringBuilder()
+								for (result in results) {
+									val displayResult =
+										"${result.categories[0].label} " + NumberFormat.getPercentInstance()
+											.format(result.categories[0].score).trim()
+									builder.append("$displayResult \n")
+								}
+
+								binding.tvResult.text = builder.toString()
 								binding.tvInferenceTime.text = "$inferenceTime ms"
 							} else {
+								binding.overlay.clear()
 								binding.tvResult.text = ""
 								binding.tvInferenceTime.text = ""
 							}
 						}
+
+						// Force a redraw
+						binding.overlay.invalidate()
 					}
 				}
 			}
@@ -77,14 +92,12 @@ class CameraActivity : AppCompatActivity() {
 			val resolutionSelector = ResolutionSelector.Builder()
 				.setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
 				.build()
-			val imageAnalyzer = ImageAnalysis.Builder()
-				.setResolutionSelector(resolutionSelector)
+			val imageAnalyzer = ImageAnalysis.Builder().setResolutionSelector(resolutionSelector)
 				.setTargetRotation(binding.viewFinder.display.rotation)
 				.setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-				.setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-				.build()
+				.setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888).build()
 			imageAnalyzer.setAnalyzer(Executors.newSingleThreadExecutor()) { image ->
-				imageClassifierHelper.classifyImage(image)
+				objectDetectionHelper.detectObject(image)
 			}
 
 			val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
@@ -94,16 +107,11 @@ class CameraActivity : AppCompatActivity() {
 			try {
 				cameraProvider.unbindAll()
 				cameraProvider.bindToLifecycle(
-					this,
-					cameraSelector,
-					preview,
-					imageAnalyzer
+					this, cameraSelector, preview, imageAnalyzer
 				)
 			} catch (exc: Exception) {
 				Toast.makeText(
-					this@CameraActivity,
-					"Gagal memunculkan kamera.",
-					Toast.LENGTH_SHORT
+					this@CameraActivity, "Gagal memunculkan kamera.", Toast.LENGTH_SHORT
 				).show()
 				Log.e(TAG, "startCamera: ${exc.message}")
 			}
@@ -111,8 +119,7 @@ class CameraActivity : AppCompatActivity() {
 	}
 
 	private fun hideSystemUI() {
-		@Suppress("DEPRECATION")
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+		@Suppress("DEPRECATION") if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 			window.insetsController?.hide(WindowInsets.Type.statusBars())
 		} else {
 			window.setFlags(
